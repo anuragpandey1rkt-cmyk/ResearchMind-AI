@@ -10,7 +10,7 @@ from app.db.session import init_db
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    await init_db()
+    # await init_db()  # Disabled for serverless to prevent cold-start timeouts
     yield
 
 
