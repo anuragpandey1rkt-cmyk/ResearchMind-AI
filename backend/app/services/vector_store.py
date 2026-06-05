@@ -11,14 +11,17 @@ class EmbeddingService:
         self.pc = pc
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        # Using Pinecone's serverless Inference API instead of local sentence-transformers
-        # to avoid the massive PyTorch dependency on Vercel
-        response = self.pc.inference.embed(
-            model="multilingual-e5-large",
-            inputs=texts,
-            parameters={"input_type": "passage", "truncate": "END"}
-        )
-        return [data.values for data in response.data]
+        results = []
+        batch_size = 50
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            response = self.pc.inference.embed(
+                model="multilingual-e5-large",
+                inputs=batch,
+                parameters={"input_type": "passage", "truncate": "END"}
+            )
+            results.extend([data.values for data in response.data])
+        return results
 
 
 class PineconeVectorStore:
@@ -45,7 +48,9 @@ class PineconeVectorStore:
             safe_metadata["text"] = chunk # Store text in metadata to retrieve it
             vectors.append((ids[idx], embeddings[idx], safe_metadata))
             
-        self.index.upsert(vectors=vectors, namespace="research_chunks")
+        batch_size = 50
+        for i in range(0, len(vectors), batch_size):
+            self.index.upsert(vectors=vectors[i:i + batch_size], namespace="research_chunks")
         return ids
 
     def add_source_text(self, source_id: str, text: str, metadata: dict[str, Any]) -> None:
@@ -99,7 +104,9 @@ class PineconeVectorStore:
                         "text": chunk
                     }
                 ))
-            self.index.upsert(vectors=vectors, namespace="paper_chunks")
+            batch_size = 50
+            for i in range(0, len(vectors), batch_size):
+                self.index.upsert(vectors=vectors[i:i + batch_size], namespace="paper_chunks")
 
         metadata_text = "\n".join(
             [
