@@ -15,15 +15,19 @@ class Settings(BaseSettings):
     groq_max_retries: int = 3
 
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./researchmind.db",
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/postgres",
         validation_alias="DATABASE_URL",
     )
     supabase_url: str = Field(default="", validation_alias="SUPABASE_URL")
     supabase_anon_key: str = Field(default="", validation_alias="SUPABASE_ANON_KEY")
     supabase_service_role_key: str = Field(default="", validation_alias="SUPABASE_SERVICE_ROLE_KEY")
+    supabase_bucket_name: str = "research-documents"
 
-    chroma_path: str = "./chroma"
-    upload_dir: str = "./storage/uploads"
+    pinecone_api_key: str = Field(default="", validation_alias="PINECONE_API_KEY")
+    pinecone_index_name: str = Field(default="researchmind", validation_alias="PINECONE_INDEX_NAME")
+
+    chroma_path: str = "./chroma" # Keeping for backward compatibility if needed temporarily
+    upload_dir: str = "./storage/uploads" # Keeping for backward compatibility
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
     rate_limit_per_minute: int = 30
     max_upload_mb: int = 25

@@ -22,8 +22,8 @@ class DocumentService:
         session_id: str | None = None,
         user_id: str | None = None,
     ):
-        path, digest = self.pdf_service.save_pdf(data, self.settings.upload_path, filename)
-        text = self.pdf_service.extract_text(Path(path))
+        public_url, digest = self.pdf_service.save_pdf(data, self.settings.upload_path, filename)
+        text = self.pdf_service.extract_text(data)
         chunks = self.chunker.chunk(text)
         document = await self.repo.add_document(
             user_id=user_id,
@@ -31,7 +31,7 @@ class DocumentService:
             filename=filename,
             content_type=content_type,
             size_bytes=len(data),
-            storage_path=str(path),
+            storage_path=public_url,
             document_hash=digest,
             extracted_chars=len(text),
             chunks_count=len(chunks),

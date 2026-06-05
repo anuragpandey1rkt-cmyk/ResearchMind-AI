@@ -1,8 +1,7 @@
 import hashlib
 from functools import cached_property
 from typing import Any
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
 from app.core.config import get_settings
 
@@ -19,21 +18,12 @@ class EmbeddingService:
         return self.model.encode(texts, normalize_embeddings=True).tolist()
 
 
-class ChromaVectorStore:
+class PineconeVectorStore:
     def __init__(self) -> None:
-        settings = get_settings()
-        self.client = chromadb.PersistentClient(
-            path=settings.chroma_path,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
+        self.settings = get_settings()
+        self.pc = Pinecone(api_key=self.settings.pinecone_api_key)
+        self.index = self.pc.Index(self.settings.pinecone_index_name)
         self.embedding_service = EmbeddingService()
-        self.documents = self.client.get_or_create_collection("research_documents")
-        self.chunks = self.client.get_or_create_collection("research_chunks")
-        self.paper_chunks = self.client.get_or_create_collection("paper_chunks")
-        self.paper_metadata = self.client.get_or_create_collection("paper_metadata")
-        self.research_findings = self.client.get_or_create_collection("research_findings")
-        self.research_limitations = self.client.get_or_create_collection("research_limitations")
-        self.future_work = self.client.get_or_create_collection("future_work")
 
     def add_chunks(self, chunks: list[str], metadata: dict[str, Any]) -> list[str]:
         if not chunks:
@@ -43,50 +33,70 @@ class ChromaVectorStore:
             hashlib.sha256(f"{metadata.get('document_id')}:{idx}:{chunk}".encode()).hexdigest()
             for idx, chunk in enumerate(chunks)
         ]
-        metadatas = [{**metadata, "chunk_index": idx} for idx in range(len(chunks))]
-        self.chunks.upsert(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
+        
+        vectors = []
+        for idx, chunk in enumerate(chunks):
+            # Pinecone metadata values must be strings, numbers, booleans, or lists of strings
+            safe_metadata = {k: v for k, v in metadata.items() if v is not None}
+            safe_metadata["chunk_index"] = idx
+            safe_metadata["text"] = chunk # Store text in metadata to retrieve it
+            vectors.append((ids[idx], embeddings[idx], safe_metadata))
+            
+        self.index.upsert(vectors=vectors, namespace="research_chunks")
         return ids
 
     def add_source_text(self, source_id: str, text: str, metadata: dict[str, Any]) -> None:
-        embedding = self.embedding_service.embed([text[:4000]])[0]
-        self.documents.upsert(ids=[source_id], embeddings=[embedding], documents=[text], metadatas=[metadata])
+        text = text[:4000] # truncate to avoid large metadata
+        embedding = self.embedding_service.embed([text])[0]
+        safe_metadata = {k: v for k, v in metadata.items() if v is not None}
+        safe_metadata["text"] = text
+        self.index.upsert(vectors=[(source_id, embedding, safe_metadata)], namespace="research_documents")
 
     def query(self, query: str, top_k: int = 8, session_id: str | None = None) -> list[dict[str, Any]]:
         embedding = self.embedding_service.embed([query])[0]
-        where = {"session_id": session_id} if session_id else None
-        result = self.chunks.query(query_embeddings=[embedding], n_results=top_k, where=where)
-        docs = result.get("documents", [[]])[0]
-        metadatas = result.get("metadatas", [[]])[0]
-        distances = result.get("distances", [[]])[0]
-        ids = result.get("ids", [[]])[0]
+        filter_dict = {"session_id": session_id} if session_id else None
+        
+        result = self.index.query(
+            vector=embedding,
+            top_k=top_k,
+            namespace="research_chunks",
+            filter=filter_dict,
+            include_metadata=True
+        )
+        
         rows: list[dict[str, Any]] = []
-        for idx, doc in enumerate(docs):
-            rows.append(
-                {
-                    "id": ids[idx],
-                    "text": doc,
-                    "metadata": metadatas[idx] or {},
-                    "score": float(1 - distances[idx]) if idx < len(distances) else 0.0,
-                }
-            )
+        for match in result.matches:
+            metadata = match.metadata or {}
+            text = metadata.pop("text", "")
+            rows.append({
+                "id": match.id,
+                "text": text,
+                "metadata": metadata,
+                "score": float(match.score)
+            })
         return rows
 
     def add_paper_artifacts(self, paper: dict, chunks: list[str]) -> None:
-        document_id = paper["document_id"]
+        document_id = paper.get("document_id", "")
+        
         if chunks:
             embeddings = self.embedding_service.embed(chunks)
             ids = [f"paper_chunk:{document_id}:{idx}" for idx in range(len(chunks))]
-            metadatas = [
-                {
-                    "document_id": document_id,
-                    "filename": paper.get("filename", ""),
-                    "title": paper.get("title", ""),
-                    "artifact_type": "paper_chunk",
-                    "chunk_index": idx,
-                }
-                for idx in range(len(chunks))
-            ]
-            self.paper_chunks.upsert(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
+            vectors = []
+            for idx, chunk in enumerate(chunks):
+                vectors.append((
+                    ids[idx], 
+                    embeddings[idx], 
+                    {
+                        "document_id": document_id,
+                        "filename": paper.get("filename", ""),
+                        "title": paper.get("title", ""),
+                        "artifact_type": "paper_chunk",
+                        "chunk_index": idx,
+                        "text": chunk
+                    }
+                ))
+            self.index.upsert(vectors=vectors, namespace="paper_chunks")
 
         metadata_text = "\n".join(
             [
@@ -98,58 +108,67 @@ class ChromaVectorStore:
                 "Metrics: " + ", ".join(paper.get("metrics", [])),
             ]
         )
-        self._upsert_single(self.paper_metadata, f"paper_metadata:{document_id}", metadata_text, paper, "paper_metadata")
-        self._upsert_list(self.research_findings, document_id, paper.get("key_findings", []), paper, "research_findings")
-        self._upsert_list(self.research_limitations, document_id, paper.get("limitations", []), paper, "research_limitations")
-        self._upsert_list(self.future_work, document_id, paper.get("future_work", []), paper, "future_work")
+        self._upsert_single("paper_metadata", f"paper_metadata:{document_id}", metadata_text, paper, "paper_metadata")
+        self._upsert_list("research_findings", document_id, paper.get("key_findings", []), paper, "research_findings")
+        self._upsert_list("research_limitations", document_id, paper.get("limitations", []), paper, "research_limitations")
+        self._upsert_list("future_work", document_id, paper.get("future_work", []), paper, "future_work")
 
     def query_paper_collection(self, collection_name: str, query: str, top_k: int = 8) -> list[dict[str, Any]]:
-        collection = getattr(self, collection_name)
         embedding = self.embedding_service.embed([query])[0]
-        result = collection.query(query_embeddings=[embedding], n_results=top_k)
-        docs = result.get("documents", [[]])[0]
-        metadatas = result.get("metadatas", [[]])[0]
-        distances = result.get("distances", [[]])[0]
-        ids = result.get("ids", [[]])[0]
+        result = self.index.query(
+            vector=embedding,
+            top_k=top_k,
+            namespace=collection_name,
+            include_metadata=True
+        )
         return [
             {
-                "id": ids[idx],
-                "text": doc,
-                "metadata": metadatas[idx] or {},
-                "score": float(1 - distances[idx]) if idx < len(distances) else 0.0,
+                "id": match.id,
+                "text": match.metadata.get("text", "") if match.metadata else "",
+                "metadata": {k: v for k, v in (match.metadata or {}).items() if k != "text"},
+                "score": float(match.score)
             }
-            for idx, doc in enumerate(docs)
+            for match in result.matches
         ]
 
-    def _upsert_list(self, collection, document_id: str, values: list[str], paper: dict, artifact_type: str) -> None:
+    def _upsert_list(self, namespace: str, document_id: str, values: list[str], paper: dict, artifact_type: str) -> None:
         clean = [value for value in values if value.strip()]
         if not clean:
             return
         embeddings = self.embedding_service.embed(clean)
         ids = [f"{artifact_type}:{document_id}:{idx}" for idx in range(len(clean))]
-        metadatas = [
-            {
-                "document_id": document_id,
-                "filename": paper.get("filename", ""),
-                "title": paper.get("title", ""),
-                "artifact_type": artifact_type,
-            }
-            for _ in clean
-        ]
-        collection.upsert(ids=ids, embeddings=embeddings, documents=clean, metadatas=metadatas)
+        
+        vectors = []
+        for idx, val in enumerate(clean):
+            vectors.append((
+                ids[idx], 
+                embeddings[idx], 
+                {
+                    "document_id": document_id,
+                    "filename": paper.get("filename", ""),
+                    "title": paper.get("title", ""),
+                    "artifact_type": artifact_type,
+                    "text": val
+                }
+            ))
+        self.index.upsert(vectors=vectors, namespace=namespace)
 
-    def _upsert_single(self, collection, row_id: str, text: str, paper: dict, artifact_type: str) -> None:
+    def _upsert_single(self, namespace: str, row_id: str, text: str, paper: dict, artifact_type: str) -> None:
         embedding = self.embedding_service.embed([text or paper.get("title", "Untitled paper")])[0]
-        collection.upsert(
-            ids=[row_id],
-            embeddings=[embedding],
-            documents=[text],
-            metadatas=[
+        self.index.upsert(
+            vectors=[(
+                row_id,
+                embedding,
                 {
                     "document_id": paper.get("document_id", ""),
                     "filename": paper.get("filename", ""),
                     "title": paper.get("title", ""),
                     "artifact_type": artifact_type,
+                    "text": text
                 }
-            ],
+            )],
+            namespace=namespace
         )
+
+# Maintain alias for compatibility during migration if necessary
+ChromaVectorStore = PineconeVectorStore

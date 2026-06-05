@@ -2,20 +2,37 @@ import hashlib
 from pathlib import Path
 import fitz
 import pdfplumber
+from supabase import create_client, Client
+from app.core.config import get_settings
 
 
 class PdfService:
-    def save_pdf(self, data: bytes, upload_dir: Path, filename: str) -> tuple[Path, str]:
+    def __init__(self):
+        self.settings = get_settings()
+        self.supabase: Client = create_client(self.settings.supabase_url, self.settings.supabase_service_role_key)
+
+    def save_pdf(self, data: bytes, upload_dir: Path, filename: str) -> tuple[str, str]:
         digest = hashlib.sha256(data).hexdigest()
         safe_name = "".join(char if char.isalnum() or char in ".-_" else "_" for char in filename)
-        path = upload_dir / f"{digest[:16]}_{safe_name}"
-        path.write_bytes(data)
-        return path, digest
+        storage_path = f"{digest[:16]}_{safe_name}"
+        
+        # Upload to Supabase Storage
+        res = self.supabase.storage.from_(self.settings.supabase_bucket_name).upload(
+            file=data,
+            path=storage_path,
+            file_options={"content-type": "application/pdf", "upsert": "true"}
+        )
+        
+        # Get public URL
+        public_url = self.supabase.storage.from_(self.settings.supabase_bucket_name).get_public_url(storage_path)
+        
+        return public_url, digest
 
-    def extract_text(self, path: Path) -> str:
+    def extract_text(self, data: bytes) -> str:
+        import io
         text_parts: list[str] = []
         try:
-            with fitz.open(path) as document:
+            with fitz.open(stream=data, filetype="pdf") as document:
                 for page in document:
                     text = page.get_text("text")
                     if text.strip():
@@ -24,7 +41,7 @@ class PdfService:
             text_parts = []
 
         if not "".join(text_parts).strip():
-            with pdfplumber.open(path) as pdf:
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
                 for page in pdf.pages:
                     text = page.extract_text() or ""
                     if text.strip():
