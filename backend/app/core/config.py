@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "ResearchMind"
     environment: str = "development"
-    backend_cors_origins: list[str] = ["http://localhost:3000"]
+    backend_cors_origins: list[str] = ["*"]
 
     groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
     groq_model: str = "llama-3.1-70b-versatile"
