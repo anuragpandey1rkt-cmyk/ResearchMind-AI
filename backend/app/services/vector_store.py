@@ -2,20 +2,23 @@ import hashlib
 from functools import cached_property
 from typing import Any
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
 from app.core.config import get_settings
 
 
 class EmbeddingService:
-    def __init__(self) -> None:
+    def __init__(self, pc: Pinecone) -> None:
         self.settings = get_settings()
-
-    @cached_property
-    def model(self) -> SentenceTransformer:
-        return SentenceTransformer(self.settings.embedding_model_name)
+        self.pc = pc
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        return self.model.encode(texts, normalize_embeddings=True).tolist()
+        # Using Pinecone's serverless Inference API instead of local sentence-transformers
+        # to avoid the massive PyTorch dependency on Vercel
+        response = self.pc.inference.embed(
+            model="multilingual-e5-large",
+            inputs=texts,
+            parameters={"input_type": "passage", "truncate": "END"}
+        )
+        return [data.values for data in response.data]
 
 
 class PineconeVectorStore:
@@ -23,7 +26,7 @@ class PineconeVectorStore:
         self.settings = get_settings()
         self.pc = Pinecone(api_key=self.settings.pinecone_api_key)
         self.index = self.pc.Index(self.settings.pinecone_index_name)
-        self.embedding_service = EmbeddingService()
+        self.embedding_service = EmbeddingService(self.pc)
 
     def add_chunks(self, chunks: list[str], metadata: dict[str, Any]) -> list[str]:
         if not chunks:
