@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.core.config import get_settings
 from app.models.base import Base
@@ -10,6 +11,7 @@ connect_args = {}
 if "postgresql" in settings.database_url or "asyncpg" in settings.database_url:
     connect_args["prepared_statement_cache_size"] = 0
     connect_args["statement_cache_size"] = 0
+    connect_args["prepared_statement_name_func"] = lambda: f"__asyncpg_{uuid4().hex}__"
 
 engine = create_async_engine(
     settings.database_url,
