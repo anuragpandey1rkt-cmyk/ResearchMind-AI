@@ -67,8 +67,8 @@ async def upload_gap_papers(
     files: list[UploadFile] = File(...),
     repo: ResearchRepository = Depends(get_research_repo),
 ):
-    if len(files) < 2:
-        raise HTTPException(status_code=400, detail="Upload at least two PDF papers.")
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload at least one PDF paper.")
     service = DocumentService(repo)
     documents = []
     for file in files:

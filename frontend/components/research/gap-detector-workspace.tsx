@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, FileText, Loader2, Network, Sparkles, Upload } from "lucide-react";
+import { Download, FileText, Loader2, Network, Sparkles, Upload, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ const scoreLabels: Record<string, string> = {
   novelty_score: "Novelty",
   research_saturation_score: "Saturation",
   impact_score: "Impact",
-  feasibility_score: "Feasibility",
+  focus_score: "Focus",
   commercialization_potential_score: "Commercial"
 };
 
@@ -22,19 +22,38 @@ export function GapDetectorWorkspace() {
   const [files, setFiles] = useState<File[]>([]);
   const [domain, setDomain] = useState("Agentic AI research systems");
   const [documentIds, setDocumentIds] = useState<string[]>([]);
+  const [uploadedDocs, setUploadedDocs] = useState<Array<{ document_id: string; filename: string; chunks_count: number }>>([]);
   const [result, setResult] = useState<GapDetectionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
   async function upload() {
+    if (files.length === 0) return;
     setLoading(true);
     setError(null);
-    setStatus("Uploading and indexing papers");
+    setStatus("Uploading and indexing papers...");
     try {
       const response = await uploadGapPapers(files);
-      setDocumentIds(response.documents.map((document) => document.document_id));
-      setStatus(`${response.documents.length} papers indexed. Ready to detect gaps.`);
+      const newDocs = response.documents.map((doc) => ({
+        document_id: doc.document_id,
+        filename: doc.filename,
+        chunks_count: doc.chunks_count,
+      }));
+
+      setUploadedDocs((prev) => {
+        const existingIds = new Set(prev.map(d => d.document_id));
+        const filteredNew = newDocs.filter(d => !existingIds.has(d.document_id));
+        const updated = [...prev, ...filteredNew];
+        setDocumentIds(updated.map((doc) => doc.document_id));
+        return updated;
+      });
+
+      setFiles([]);
+      const fileInput = document.getElementById("papers") as HTMLInputElement;
+      if (fileInput) fileInput.value = "";
+
+      setStatus(`Successfully uploaded and indexed ${newDocs.length} paper(s).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
     } finally {
@@ -43,13 +62,17 @@ export function GapDetectorWorkspace() {
   }
 
   async function analyze() {
+    if (documentIds.length < 2) {
+      setError("Please upload at least two papers for gap analysis.");
+      return;
+    }
     setLoading(true);
     setError(null);
-    setStatus("Running paper analysis, synthesis, contradiction, gap, and innovation agents");
+    setStatus("Running paper analysis, synthesis, contradiction, gap, and innovation agents...");
     try {
       const response = await analyzeGaps(documentIds, domain);
       setResult(response);
-      setStatus("Research gap report generated.");
+      setStatus("Research gap report generated successfully.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gap analysis failed.");
     } finally {
@@ -81,31 +104,68 @@ export function GapDetectorWorkspace() {
           <CardTitle>Paper Collection</CardTitle>
           <CardDescription>Use at least two PDF papers for cross-paper comparison.</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 lg:grid-cols-[1fr_220px_220px]">
-          <div className="space-y-2">
-            <Label htmlFor="domain">Research domain</Label>
-            <Input id="domain" value={domain} onChange={(event) => setDomain(event.target.value)} />
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-[1fr_220px_220px]">
+            <div className="space-y-2">
+              <Label htmlFor="domain">Research domain</Label>
+              <Input id="domain" value={domain} onChange={(event) => setDomain(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="papers">PDF papers</Label>
+              <Input
+                id="papers"
+                type="file"
+                accept="application/pdf"
+                multiple
+                onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+              />
+            </div>
+            <div className="flex items-end gap-2">
+              <Button onClick={upload} disabled={loading || files.length === 0} className="flex-1">
+                {loading && files.length > 0 ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Upload
+              </Button>
+              <Button onClick={analyze} disabled={loading || documentIds.length < 2} className="flex-1" variant="secondary">
+                {loading && documentIds.length > 0 ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                Analyze
+              </Button>
+            </div>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="papers">PDF papers</Label>
-            <Input
-              id="papers"
-              type="file"
-              accept="application/pdf"
-              multiple
-              onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
-            />
-          </div>
-          <div className="flex items-end gap-2">
-            <Button onClick={upload} disabled={loading || files.length < 2} className="flex-1">
-              {loading && !documentIds.length ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              Upload
-            </Button>
-            <Button onClick={analyze} disabled={loading || documentIds.length < 2} className="flex-1" variant="secondary">
-              {loading && documentIds.length > 0 ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              Analyze
-            </Button>
-          </div>
+
+          {uploadedDocs.length > 0 ? (
+            <div className="border-t pt-4">
+              <Label className="text-sm font-semibold">Active Paper Collection ({uploadedDocs.length})</Label>
+              <div className="mt-2 grid gap-2">
+                {uploadedDocs.map((doc) => (
+                  <div key={doc.document_id} className="flex items-center justify-between rounded-lg border bg-card p-3 shadow-sm">
+                    <div className="flex items-center gap-3">
+                      <FileText className="h-5 w-5 text-primary shrink-0" />
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-foreground line-clamp-1 max-w-[250px] sm:max-w-[400px] md:max-w-[600px]">
+                          {doc.filename}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{doc.chunks_count} text chunks indexed</span>
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => {
+                        setUploadedDocs((prev) => {
+                          const updated = prev.filter((d) => d.document_id !== doc.document_id);
+                          setDocumentIds(updated.map((d) => d.document_id));
+                          return updated;
+                        });
+                      }}
+                      className="h-8 w-8 text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
