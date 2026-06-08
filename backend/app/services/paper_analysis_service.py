@@ -25,7 +25,8 @@ class PaperAnalysisService:
         self.vector_store = ChromaVectorStore()
 
     async def analyze_document(self, document) -> PaperSummary:
-        text = self.pdf_service.extract_text(Path(document.storage_path))
+        pdf_data = await self.pdf_service.download_pdf(document.storage_path)
+        text = self.pdf_service.extract_text(pdf_data)
         sections = self._extract_sections(text)
         heuristic = self._heuristic_summary(document.id, document.filename, text, sections)
         llm_summary = await self._llm_enrich(heuristic, text)

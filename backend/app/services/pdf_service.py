@@ -47,3 +47,16 @@ class PdfService:
                     if text.strip():
                         text_parts.append(text)
         return "\n\n".join(text_parts).strip()
+
+    async def download_pdf(self, storage_path: str) -> bytes:
+        import httpx
+        if storage_path.startswith(("http://", "https://")):
+            async with httpx.AsyncClient() as client:
+                res = await client.get(storage_path)
+                res.raise_for_status()
+                return res.content
+        else:
+            path = Path(storage_path)
+            if not path.is_absolute():
+                path = Path(self.settings.upload_path) / path.name
+            return path.read_bytes()
